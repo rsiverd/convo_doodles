@@ -1,0 +1,5 @@
+
+# Ryan's DIA code (a working example?):
+https://github.com/ryanoelkers/DIA.git
+https://github.com/ryanoelkers/DIA/blob/master/routines/C/oisdifference.c
+
