@@ -8,7 +8,7 @@
 /*                                                                          */
 /* NOTE/WARNING: this test implementation uses the ENTIRE IMAGE to fit the  */
 /* convolution kernel. The fit may take a while ...                         */
-int convo_ufit_img_nobg_quick (
+int convo_ufit_img_quick (
                   ezImg  *src_stamp,   /*  [in] source/ref image structure  */
                   ezImg  *dst_stamp,   /*  [in] target/out image structure  */
                    long   halfx,       /* [par] X half-size of convo kernel */
@@ -42,6 +42,7 @@ int convo_ufit_img_nobg_quick (
       return 1; /* failure */
    }
  //n_pix_params += kern_values->NumPix;   /* must fit for kernel pixels */
+   #define NKERNPIX kern_values->NumPix
 
    /* NULL background pointer disables fitting of background term: */
    long extra_params = 0;
@@ -53,13 +54,13 @@ int convo_ufit_img_nobg_quick (
    }
 
    /* Summarize fitted parameters: */
-   long total_parameters = kern_values->NumPix + extra_params;
+   long total_parameters = NKERNPIX + extra_params;
    #define NFITPARS total_parameters
    fprintf(stderr, "%s:\n"
          "Kernel pixels:   %ld\n"
          "Extra params:    %ld\n"
          "Total params:    %ld\n"
-         , FUNCNAME, kern_values->NumPix, extra_params, total_params);
+         , FUNCNAME, NKERNPIX, extra_params, total_params);
 
    /* Kernel size is set by dimensions of kern_vals ezImg: */
    //const int halfx = (kern_vals->naxes[0] - 1) / 2;
@@ -79,7 +80,7 @@ int convo_ufit_img_nobg_quick (
 
    /* Parameters: */
    double *params = malloc(NFITPARS * sizeof(*params));
-   for ( i = 0; i < NFITPARS; i++ ) { params[i] = 0.0; }
+   for ( int i = 0; i < NFITPARS; i++ ) { params[i] = 0.0; }
 
    /* Create intermediate vectors and matrices: */
    double XTy[NFITPARS] = { 0.0 };
@@ -95,13 +96,13 @@ int convo_ufit_img_nobg_quick (
       if (  XTXi != NULL ) free( XTXi);
       return 1; /* failure */
    }
-   for ( i = 0; i < NFITPARS; i++ ) {
+   for ( int i = 0; i < NFITPARS; i++ ) {
       mXTX[i]  = XTX  + i*NFITPARS;
       mXTXi[i] = XTXi + i*NFITPARS;
    }
 
    /* Initialize: */
-   for ( i = 0; i < NFITPARS*NFITPARS; i++ ) { XTX[i] = XTXi[i] = 0.0; }
+   for ( int i = 0; i < NFITPARS*NFITPARS; i++ ) { XTX[i] = XTXi[i] = 0.0; }
 
    /* ---------------------------------------------------------------------- */
    /* ---------------------------------------------------------------------- */
@@ -110,11 +111,12 @@ int convo_ufit_img_nobg_quick (
 
    /* Pre-compute 1-D index offsets: */
    //long *r_indices = malloc((NFITPARS - 1) * sizeof(*r_indices));
-   long *r_indices = malloc(kern_values->NumPix * sizeof(*r_indices));
-   int k = 0;
-   for ( j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
-      for ( i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
-         r_indices[k++] = j * NCOLS + i;
+   //long *r_indices = malloc(kern_values->NumPix * sizeof(*r_indices));
+   long *idx_offsets = malloc(NKERNPIX * sizeof(*idx_offsets));
+   k = 0;
+   for ( int j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
+      for ( int i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
+         idx_offsets[k++] = j * NCOLS + i;
       }
    }
 
@@ -143,26 +145,24 @@ int convo_ufit_img_nobg_quick (
          /* Skip bad pixels from dst_stamp: */
          if ( isnan(dstpixval) || isinf(dstpixval) ) { continue; }
 
-         /* Fill slice: */
+         /* Fill slice (2-D): */
        //int pp = 1;
-         int pp = extra_params;
+         int i, j, pp = extra_params;
          for ( j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
             for ( i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
-               // ref_img_Y = Y + j
-               // ref_img_X = X + i
-               // kern_Y = halfy + j
-               // kern_X = halfx + i
-               //
                srcpixval = src_stamp->pix2D[Y+j][X+i];
                slice[pp] = srcpixval;
                smask[pp] = isnan(srcpixval) || isinf(srcpixval);
                pp++;
-               //slice[pp++] = src_stamp->pix2D[Y+j][X+i];
-               //ref_image->pix2D[Y+j][X+i] * kernel[halfy + j][halfx + i]
-               // tgt_image->pix2D[Y][X] =~ sum(ref_image ** kernel)
-
             }
          }
+
+       ///* Fill slice (1-D): */
+       //long idx1D = Y * NCOLS + X;
+       //int i, pp = extra_params;
+       //for ( i = 0; i < NKERNPIX; i++ ) {
+       //   srcpixval = src_stamp->pix1D[idx1D + idx_offsets[i]];
+       //}
 
          /* Add slice contents into intermediate sums, skip bad values: */
          //if ( !isnan(dstpixval) && !isinf(dstpixval) ) {
