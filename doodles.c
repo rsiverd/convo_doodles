@@ -1,5 +1,37 @@
+/****************************************************************************/
+/*                                                                          */
+/*    Test routines for delta function (pixel basis) convolution kernel     */
+/* fitting. Hopefully it works ...                                          */
+/*                                                                          */
+/* Rob Siverd                                                               */
+/* Created:       2018-11-06                                                */
+/* Last modified: 2018-11-06                                                */
+/*                                                                          */
+/****************************************************************************/
+/****************************************************************************/
+/*--------------------------------------------------------------------------*/
 
+#include   <math.h>
+#include  <stdio.h>
+#include <stdlib.h>
+
+/* Shared routines: */
+#include  "imageIO.h"
 #include "simpleIO.h"
+#include "m_invert.h"
+
+/* OpenMP multi-threading: */
+#ifdef _OPENMP
+   #include      <omp.h>
+#endif
+
+/* Useful min/max macro definitions: */
+#ifndef MIN
+#  define MIN(a,b) ((a) > (b) ? (b) : (a))
+#endif
+#ifndef MAX
+#  define MAX(a,b) ((a) < (b) ? (b) : (a))
+#endif
 
 /*--------------------------------------------------------------------------*/
 /* Test code for direct (delta function) unweighted kernel fitting. This    */
@@ -20,6 +52,7 @@ int convo_ufit_img_quick (
               //    int  *nparam       /* output: size of parameter vector  */
                      )
 #define FUNCNAME "convo_ufit_img_quick"                     
+{
 
    /* Three valid ezImg pointers required: */
    if ( !src_stamp || !dst_stamp || !kern_vals ) {
@@ -32,6 +65,13 @@ int convo_ufit_img_quick (
       return 1; /* failure */
    }
 
+   /* Variables and short-hand: */
+   long i, j, X, Y;
+   long SNX = (src_stamp->naxes)[0];
+   long SNY = (src_stamp->naxes)[1];
+   long DNX = (dst_stamp->naxes)[0];
+   long DNY = (dst_stamp->naxes)[1];
+
    /* Initialize convolution kernel: */
    #define KXSIZE 2*halfx + 1
    #define KYSIZE 2*halfy + 1
@@ -41,8 +81,8 @@ int convo_ufit_img_quick (
       fprintf(stderr, "%s: failed to allocate kernel image!\n", FUNCNAME);
       return 1; /* failure */
    }
- //n_pix_params += kern_values->NumPix;   /* must fit for kernel pixels */
-   #define NKERNPIX kern_values->NumPix
+ //n_pix_params += kern_vals->NumPix;   /* must fit for kernel pixels */
+   #define NKERNPIX kern_vals->NumPix
 
    /* NULL background pointer disables fitting of background term: */
    long extra_params = 0;
@@ -54,8 +94,8 @@ int convo_ufit_img_quick (
    }
 
    /* Summarize fitted parameters: */
-   long total_parameters = NKERNPIX + extra_params;
-   #define NFITPARS total_parameters
+   const long total_params = NKERNPIX + extra_params;
+   #define NFITPARS total_params
    fprintf(stderr, "%s:\n"
          "Kernel pixels:   %ld\n"
          "Extra params:    %ld\n"
@@ -78,12 +118,15 @@ int convo_ufit_img_quick (
  //#define NFITPARS KXSIZE * KYSIZE
  //#define NFITPARS kern_vals->NumPix
 
+   fprintf(stderr, "Beginning matrix/array allocation ... ");
    /* Parameters: */
    double *params = malloc(NFITPARS * sizeof(*params));
-   for ( int i = 0; i < NFITPARS; i++ ) { params[i] = 0.0; }
+   for ( i = 0; i < NFITPARS; i++ ) { params[i] = 0.0; }
 
    /* Create intermediate vectors and matrices: */
-   double XTy[NFITPARS] = { 0.0 };
+   double XTy[NFITPARS]; // = { 0.0 };
+   for ( i = 0; i < NFITPARS; i++ ) { XTy[i] = 0.0; }
+
    double **mXTX  = malloc(NFITPARS * sizeof(*mXTX));
    double **mXTXi = malloc(NFITPARS * sizeof(*mXTXi));
    double   *XTX  = malloc(NFITPARS * NFITPARS * sizeof(*XTX));
@@ -96,29 +139,40 @@ int convo_ufit_img_quick (
       if (  XTXi != NULL ) free( XTXi);
       return 1; /* failure */
    }
-   for ( int i = 0; i < NFITPARS; i++ ) {
+   for ( i = 0; i < NFITPARS; i++ ) {
       mXTX[i]  = XTX  + i*NFITPARS;
       mXTXi[i] = XTXi + i*NFITPARS;
    }
 
    /* Initialize: */
-   for ( int i = 0; i < NFITPARS*NFITPARS; i++ ) { XTX[i] = XTXi[i] = 0.0; }
+   for ( i = 0; i < NFITPARS*NFITPARS; i++ ) { XTX[i] = XTXi[i] = 0.0; }
+
+   fprintf(stderr, "done.\n");
 
    /* ---------------------------------------------------------------------- */
    /* ---------------------------------------------------------------------- */
    /* ---------------------------------------------------------------------- */
    /* ---------------------------------------------------------------------- */
 
-   /* Pre-compute 1-D index offsets: */
-   //long *r_indices = malloc((NFITPARS - 1) * sizeof(*r_indices));
-   //long *r_indices = malloc(kern_values->NumPix * sizeof(*r_indices));
-   long *idx_offsets = malloc(NKERNPIX * sizeof(*idx_offsets));
-   k = 0;
-   for ( int j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
-      for ( int i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
-         idx_offsets[k++] = j * NCOLS + i;
-      }
-   }
+ ///* Pre-compute 1-D index offsets: */
+ ////long *r_indices = malloc((NFITPARS - 1) * sizeof(*r_indices));
+ ////long *r_indices = malloc(kern_vals->NumPix * sizeof(*r_indices));
+ //long *idx_offsets = malloc(NKERNPIX * sizeof(*idx_offsets));
+ //int k = 0;
+ //for ( int j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
+ //   for ( int i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
+ //      idx_offsets[k++] = j * NCOLS + i;
+ //   }
+ //}
+
+   print_size(src_stamp, stderr);
+   fprintf(stderr, "src_stamp[0][0]: %f\n", src_stamp->pix2D[0][0]);
+   print_size(dst_stamp, stderr);
+   fprintf(stderr, "dst_stamp[0][0]: %f\n", dst_stamp->pix2D[0][0]);
+   fprintf(stderr, "Starting parallel portion ... \n");
+#ifdef _OPENMP
+   omp_set_num_threads(1);
+#endif
 
 #ifdef _OPENMP
 #  pragma omp parallel private(i, j, X, Y)
@@ -127,98 +181,121 @@ int convo_ufit_img_quick (
 
       /* Scratch data (per-thread): */
       register double dstpixval, srcpixval;
-      double dX, dY;
-      double slice[NFITPARS] = { 1.0 };
-      double tmp_XTy[NFITPARS] = { 0.0 };
-      double tmp_mXTX[NFITPARS][NFITPARS] = {{ 0.0 }};
-      int    isbad[NFITPARS] = { 0 };
+      register int x_oob, y_oob;
+      //register long x_eff, y_eff;
+      //double dX, dY;
+      int    isbad[NFITPARS]; // = { 0 };
+      double slice[NFITPARS]; // = { 1.0 };
+      double tmp_XTy[NFITPARS]; // = { 0.0 };
+      double tmp_mXTX[NFITPARS][NFITPARS]; // = {{ 0.0 }};
 
-   /* Loop over stamp area (ignores edge pix): */
+      /* Initialize (these arrays are variable-length): */
+      fprintf(stderr, "Initialize stuff before sums ... ");
+      for ( i = 0; i < NFITPARS; i++ ) {
+         slice[i] = 1.0;
+         isbad[i] = 0;
+         tmp_XTy[i] = 0.0;
+         for ( j = 0; j < NFITPARS; j++ ) { tmp_mXTX[i][j] = 0.0; }
+      }
+      fprintf(stderr, "done.\n");
+
+      /* Loop over dst_stamp area (ignores edge pix): */
+      fprintf(stderr, "Beginning loop over dst_stamp ... ");
 #  ifdef _OPENMP
 #     pragma omp for schedule(static)
 #  endif
-   for ( Y = 1; Y < NROWS - 1; Y++ ) {              /* loop over image rows */
-      for ( X = 1; X < NCOLS - 1; X++ ) {           /* loop over image cols */
+      for ( Y = halfy; Y < DNY - halfy; Y++ ) {            /* dst_stamp rows */
+    //for ( Y = 1; Y < DNY - 1; Y++ ) {                    /* dst_stamp rows */
+         for ( X = halfx; X < DNX - halfx; X++ ) {         /* dst_stamp cols */
+       //for ( X = 1; X < DNX - 1; X++ ) {                 /* dst_stamp cols */
 
-         dstpixval = (dst_stamp->pix2D)[Y][X];
+            dstpixval = (dst_stamp->pix2D)[Y][X];
 
-         /* Skip bad pixels from dst_stamp: */
-         if ( isnan(dstpixval) || isinf(dstpixval) ) { continue; }
+            /* Skip bad pixels from dst_stamp: */
+            if ( isnan(dstpixval) || isinf(dstpixval) ) { continue; }
 
-         /* Fill slice (2-D): */
-       //int pp = 1;
-         int i, j, pp = extra_params;
-         for ( j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
-            for ( i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
-               srcpixval = src_stamp->pix2D[Y+j][X+i];
-               slice[pp] = srcpixval;
-               smask[pp] = isnan(srcpixval) || isinf(srcpixval);
-               pp++;
+            /* Fill slice (2-D): */
+          //int pp = 1;
+            int pp = extra_params;
+            for ( j = -halfy; j <= halfy; j++ ) {          /* kernel rows */
+               y_oob = (Y + j < 0) || (SNY <= Y + j);
+               for ( i = -halfx; i <= halfx; i++ ) {       /* kernel cols */
+                  x_oob = (X + i < 0) || (SNX <= X + i);
+                  if ( y_oob || x_oob ) {
+                     isbad[pp] = 1;    /* out-of-bounds, avoid segfault */
+                  } else {
+                     srcpixval = src_stamp->pix2D[Y+j][X+i];
+                     slice[pp] = srcpixval;
+                     isbad[pp] = isnan(srcpixval) || isinf(srcpixval);
+                  }
+                  pp++;
+               }
             }
-         }
 
-       ///* Fill slice (1-D): */
-       //long idx1D = Y * NCOLS + X;
-       //int i, pp = extra_params;
-       //for ( i = 0; i < NKERNPIX; i++ ) {
-       //   srcpixval = src_stamp->pix1D[idx1D + idx_offsets[i]];
-       //}
+          ///* Fill slice (1-D): */
+          //long idx1D = Y * NCOLS + X;
+          //int i, pp = extra_params;
+          //for ( i = 0; i < NKERNPIX; i++ ) {
+          //   srcpixval = src_stamp->pix1D[idx1D + idx_offsets[i]];
+          //}
 
-         /* Add slice contents into intermediate sums, skip bad values: */
-         //if ( !isnan(dstpixval) && !isinf(dstpixval) ) {
-         //NOTE: this should really be "if pixval_okay AND sliceval_okay ...
-         //
- 
-         /* Compute XTy (X^T * img): */
-         for ( i = 0; i < NPARS; i++ ) {
-            if ( !smask[i] ) {
-               tmp_XTy[i] += slice[i] * dstpixval;
+            /* Compute XTy (X^T * img): */
+            for ( i = 0; i < NFITPARS; i++ ) {
+               if ( !isbad[i] ) { tmp_XTy[i] += slice[i] * dstpixval; }
             }
-         }
 
-         /* Compute XTX (X^T * X): */
-         for ( j = 0; j < NPARS; j++ ) {
-            if ( !smask[j] ) {
-               for ( i = 0; i < NPARS; i++ ) {
-                  if ( !smask[i] ) {
-                     tmp_mXTX[j][i] += slice[j] * slice[i];
+            /* Compute XTX (X^T * X): */
+            for ( j = 0; j < NFITPARS; j++ ) {
+               if ( !isbad[j] ) {
+                  for ( i = 0; i < NFITPARS; i++ ) {
+                     if ( !isbad[i] ) { tmp_mXTX[j][i] += slice[j] * slice[i]; }
                   }
                }
             }
-         }
 
-         //}         /* end of non-NaN block */
-
-      }
-   }
+         }              /* close loop over rows */
+      }                 /* close loop over rows */
+      fprintf(stderr, "done.\n");
 
 #ifdef _OPENMP
 #  pragma omp critical
 #endif
       {
          /* Accumulate results: */
-         for ( j = 0; j < NPARS; j++ ) { XTy[j] += tmp_XTy[j]; }
-         for ( j = 0; j < NPARS; j++ ) {
-            for ( i = 0; i < NPARS; i++ ) {
+         for ( j = 0; j < NFITPARS; j++ ) { XTy[j] += tmp_XTy[j]; }
+         for ( j = 0; j < NFITPARS; j++ ) {
+            for ( i = 0; i < NFITPARS; i++ ) {
                mXTX[j][i] += tmp_mXTX[j][i];
             }
          }
       }
+
    } /* end of OpenMP parallel region (implied barrier) */
 
+
    /* Invert matrix: */
-   MatrixInversion(mXTX, NPARS, mXTXi);
+   fprintf(stderr, "Inverting matrix ... ");
+   MatrixInversion(mXTX, NFITPARS, mXTXi);
+   fprintf(stderr, "done.\n");
 
    /* Compute fit parameters: */
-   for ( j = 0; j < NPARS; j++ ) {
-      for ( i = 0; i < NPARS; i++ ) {
+   for ( j = 0; j < NFITPARS; j++ ) {
+      for ( i = 0; i < NFITPARS; i++ ) {
          params[j] += mXTXi[j][i] * XTy[i];
       }
    }
 
+   /* Put fitted kernel pixels into ezImg: */
+   fprintf(stderr, "Storing kernel pixels ... ");
+   for ( i = 0; i < kern_vals->NumPix; i++ ) {
+      kern_vals->pix1D[i] = params[i + extra_params];
+   }
+   fprintf(stderr, "done.\n");
+
    /* Return results: */
-   *fitpar = params;
-   *nparam = NPARS;
+ //*fitpar = params;
+ //*nparam = NFITPARS;
+   if ( background != NULL ) { *background = params[0]; }
 
    /* Free scratch memory: */
    free(XTX);   free(mXTX);
